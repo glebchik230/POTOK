@@ -1,0 +1,5 @@
+const assert=require('node:assert/strict'),C=require('../core.js');
+assert.equal(C.monthBounds('2024-02').end,'2024-02-29');assert.throws(()=>C.monthBounds('2025-13'));
+let tx=[{id:'a',date:'2025-01-01',amount:-10000},{id:'b',date:'2025-01-02',amount:2000},{id:'c',date:'2025-01-03',amount:-100}];
+assert.deepEqual(C.sortTransactions(tx,'amount-desc').map(t=>t.id),['a','b','c']);assert.deepEqual(C.sortTransactions(tx,'amount-asc').map(t=>t.id),['c','b','a']);assert.equal(tx[0].id,'a');
+let d={imports:[{id:'i',account:'one',opening:20000,start:'2025-01-01',end:'2025-02-28'}],transactions:tx.map(t=>({...t,account:'one'}))};let jan=C.monthSummary(d,'2025-01'),feb=C.monthSummary(d,'2025-02');assert.equal(jan.closing,11900);assert.equal(feb.opening,11900);assert.ok(feb.accounts[0].covered);d.imports.push({id:'j',account:'two',opening:null,start:'2025-01-01',end:'2025-01-31'});assert.equal(C.monthSummary(d,'2025-01').opening,null);assert.equal(C.lockedThrough([{month:'2025-01-01'},{month:'2025-02-01',reopened_at:'yes'}]),'2025-01-31');console.log('Core tests passed');

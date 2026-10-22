@@ -1,0 +1,1 @@
+{"name":"potok","version":"2.0.0","private":true,"description":"Static bank statement ledger with Supabase","scripts":{"test":"node tests/parser.test.cjs && node tests/core.test.cjs && node tests/dom.test.mjs && node tests/sql.test.mjs"},"devDependencies":{"@electric-sql/pglite":"0.5.11","jsdom":"30.1.3"}}
