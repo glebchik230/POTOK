@@ -1,0 +1,111 @@
+-- Поток 2.2: наличные, настройки и ручная сверка. Выполнить целиком.
+begin;
+create or replace function public.potok_validate(d jsonb) returns void language plpgsql set search_path='' as $$
+declare t jsonb; i jsonb; n numeric; f jsonb; e jsonb; o jsonb; r record; bt jsonb;
+begin
+ if jsonb_typeof(d) is distinct from 'object' or d->>'version' is distinct from '1' or jsonb_typeof(d->'transactions') is distinct from 'array' or jsonb_typeof(d->'imports') is distinct from 'array' then raise exception 'INVALID_DATA'; end if;
+ if octet_length(d::text)>16000000 or jsonb_array_length(d->'transactions')>20000 then raise exception 'WORKSPACE_TOO_LARGE'; end if;
+ if exists(select 1 from jsonb_array_elements(d->'transactions') tx group by tx->>'id' having count(*)>1) or exists(select 1 from jsonb_array_elements(d->'transactions') tx group by tx->>'key' having count(*)>1) or exists(select 1 from jsonb_array_elements(d->'imports') imp group by imp->>'id' having count(*)>1) then raise exception 'DUPLICATE_ID'; end if;
+ for i in select value from jsonb_array_elements(d->'imports') loop
+  if coalesce(i->>'id','')='' or coalesce(i->>'account','')='' or coalesce(i->>'start','')!~'^\d{4}-\d{2}-\d{2}$' or coalesce(i->>'end','')!~'^\d{4}-\d{2}-\d{2}$' or (i->>'start')::date>(i->>'end')::date then raise exception 'INVALID_IMPORT'; end if;
+  if not(i ? 'opening') or (i->'opening'<>'null'::jsonb and (jsonb_typeof(i->'opening')<>'number' or (i->>'opening')::numeric<>trunc((i->>'opening')::numeric) or abs((i->>'opening')::numeric)>9000000000000000)) then raise exception 'INVALID_BALANCE'; end if;
+ end loop;
+ for t in select value from jsonb_array_elements(d->'transactions') loop
+  if coalesce(t->>'id','')='' or coalesce(t->>'key','')='' or coalesce(t->>'account','')='' or coalesce(t->>'date','')!~'^\d{4}-\d{2}-\d{2}$' or jsonb_typeof(t->'amount') is distinct from 'number' then raise exception 'INVALID_TRANSACTION'; end if;
+  n=(t->>'amount')::numeric;
+  if n<>trunc(n) or n=0 or abs(n)>1000000000000 then raise exception 'INVALID_AMOUNT'; end if;
+  if not exists(select 1 from jsonb_array_elements(d->'imports') imp where imp->>'id'=t->>'importId' and imp->>'account'=t->>'account' and (t->>'date')::date between (imp->>'start')::date and (imp->>'end')::date) then raise exception 'MISSING_IMPORT'; end if;
+ end loop;
+ f:=d->'finance';
+ if f is not null then
+  if jsonb_typeof(f) is distinct from 'object' or jsonb_typeof(f->'cashEnabled') is distinct from 'boolean' or jsonb_typeof(f->'cashEntries') is distinct from 'array' or jsonb_typeof(f->'crm') is distinct from 'object' then raise exception 'INVALID_FINANCE'; end if;
+  if jsonb_array_length(f->'cashEntries')>20000 then raise exception 'WORKSPACE_TOO_LARGE'; end if;
+  o:=f->'cashOpening';
+  if o is not null and o<>'null'::jsonb then
+   if jsonb_typeof(o) is distinct from 'object' or coalesce(o->>'date','')!~'^\d{4}-\d{2}-\d{2}$' or jsonb_typeof(o->'amount') is distinct from 'number' then raise exception 'INVALID_CASH_OPENING'; end if;
+   perform (o->>'date')::date;
+   if (o->>'amount')::numeric<0 or (o->>'amount')::numeric>1000000000000 or (o->>'amount')::numeric<>trunc((o->>'amount')::numeric) then raise exception 'INVALID_CASH_OPENING'; end if;
+  end if;
+  if exists(select 1 from jsonb_array_elements(f->'cashEntries') ce group by ce->>'id' having count(*)>1) or exists(select 1 from jsonb_array_elements(f->'cashEntries') ce where coalesce(ce->>'bankTransactionId','')<>'' group by ce->>'bankTransactionId' having count(*)>1) then raise exception 'DUPLICATE_CASH'; end if;
+  for e in select value from jsonb_array_elements(f->'cashEntries') loop
+   if coalesce(e->>'id','')='' or coalesce(e->>'kind','') not in ('income','expense','withdrawal','deposit') or coalesce(e->>'date','')!~'^\d{4}-\d{2}-\d{2}$' or jsonb_typeof(e->'amount') is distinct from 'number' then raise exception 'INVALID_CASH'; end if;
+   if o is null or o='null'::jsonb or (e->>'date')::date<(o->>'date')::date then raise exception 'INVALID_CASH_OPENING'; end if;
+   n:=(e->>'amount')::numeric;
+   if n=0 or abs(n)>1000000000000 or n<>trunc(n) or ((e->>'kind' in ('income','withdrawal'))<>(n>0)) then raise exception 'INVALID_CASH'; end if;
+   if e->>'kind' in ('withdrawal','deposit') then
+    select tx into bt from jsonb_array_elements(d->'transactions') tx where tx->>'id'=e->>'bankTransactionId';
+    if bt is null or bt->>'date'<>e->>'date' or (bt->>'amount')::numeric<>-n then raise exception 'MISSING_CASH_LINK'; end if;
+   elsif coalesce(e->>'bankTransactionId','')<>'' then raise exception 'INVALID_CASH'; end if;
+  end loop;
+  for r in select key,value from jsonb_each(f->'crm') loop
+   if r.key!~'^\d{4}-(0[1-9]|1[0-2])$' or jsonb_typeof(r.value) is distinct from 'object' then raise exception 'INVALID_CRM'; end if;
+   for e in select value from jsonb_each(r.value) where key in ('crmCash','actualCash','crmNoncash','actualNoncash') loop
+    if e<>'null'::jsonb then
+     if jsonb_typeof(e) is distinct from 'number' then raise exception 'INVALID_CRM'; end if;
+     n:=e::text::numeric;if n<0 or n>1000000000000 or n<>trunc(n) then raise exception 'INVALID_CRM'; end if;
+    end if;
+   end loop;
+  end loop;
+ end if;
+
+end $$;
+create or replace function public.potok_projection(d jsonb, cutoff date) returns jsonb language sql immutable set search_path='' as $$
+ select jsonb_build_object(
+ 'cashOpening',case when (d#>>'{finance,cashOpening,date}')::date<=cutoff then d#>'{finance,cashOpening}' else 'null'::jsonb end,
+ 'cashEntries',coalesce((select jsonb_agg(ce order by ce->>'id') from jsonb_array_elements(coalesce(d#>'{finance,cashEntries}','[]'::jsonb)) ce where (ce->>'date')::date<=cutoff),'[]'::jsonb),
+ 'crm',coalesce((select jsonb_object_agg(key,value) from jsonb_each(coalesce(d#>'{finance,crm}','{}'::jsonb)) where key<=to_char(cutoff,'YYYY-MM')),'{}'::jsonb),
+ 'transactions',coalesce((select jsonb_agg(t order by t->>'id') from jsonb_array_elements(d->'transactions') t where (t->>'date')::date<=cutoff),'[]'::jsonb),
+ 'imports',coalesce((select jsonb_agg(i-'cloudFileId' order by i->>'id') from jsonb_array_elements(d->'imports') i where (i->>'start')::date<=cutoff),'[]'::jsonb));
+$$;
+create or replace function public.potok_bank_summary(d jsonb,m date) returns jsonb language plpgsql set search_path='' as $$
+declare e date:=(m+interval '1 month - 1 day')::date; a text; anchor jsonb; accounts jsonb:='[]'; op bigint; inc bigint; exp bigint; cnt bigint; total_in bigint:=0; total_out bigint:=0; total_count bigint:=0; total_open bigint:=0; missing boolean:=false;
+begin
+ for a in select distinct i->>'account' from jsonb_array_elements(d->'imports') i where (i->>'start')::date<=e order by 1 loop
+  anchor:=null; op:=null;
+  select i into anchor from jsonb_array_elements(d->'imports') i where i->>'account'=a and i->'opening'<>'null'::jsonb and (i->>'start')::date<=m order by i->>'start',i->>'id' limit 1;
+  if anchor is not null then select (anchor->>'opening')::bigint+coalesce(sum((t->>'amount')::bigint),0) into op from jsonb_array_elements(d->'transactions') t where t->>'account'=a and (t->>'date')::date>=(anchor->>'start')::date and (t->>'date')::date<m; end if;
+  select coalesce(sum(greatest((t->>'amount')::bigint,0)),0),coalesce(sum(greatest(-(t->>'amount')::bigint,0)),0),count(*) into inc,exp,cnt from jsonb_array_elements(d->'transactions') t where t->>'account'=a and (t->>'date')::date between m and e;
+  accounts:=accounts||jsonb_build_array(jsonb_build_object('account',a,'opening',op,'income',inc,'expense',exp,'closing',op+inc-exp,'count',cnt));
+  total_in:=total_in+inc; total_out:=total_out+exp; total_count:=total_count+cnt;
+  if op is null then missing:=true; else total_open:=total_open+op; end if;
+ end loop;
+ return jsonb_build_object('month',to_char(m,'YYYY-MM'),'accounts',accounts,'income',total_in,'expense',total_out,'net',total_in-total_out,'count',total_count,'opening',case when missing or accounts='[]'::jsonb then null else total_open end,'closing',case when missing or accounts='[]'::jsonb then null else total_open+total_in-total_out end);
+end $$;
+
+create or replace function public.potok_effective(d jsonb) returns jsonb language plpgsql immutable set search_path='' as $$
+declare f jsonb:=d->'finance'; tx jsonb; start_date text;
+begin
+ if coalesce((f->>'cashEnabled')::boolean,false)=false then return d; end if;
+ select coalesce(jsonb_agg(ce||jsonb_build_object('id','cash:'||(ce->>'id'),'cashId',ce->>'id','key','cash:'||(ce->>'id'),'account','__potok_cash__','importId','__potok_cash__','party','Наличная касса','category',case when ce->>'kind'='income' then 'Выручка' when ce->>'kind'='expense' then 'Прочие наличные расходы' else 'Собственные переводы' end)),'[]'::jsonb) into tx from jsonb_array_elements(f->'cashEntries') ce;
+ start_date:=coalesce(f#>>'{cashOpening,date}',(select min(ce->>'date') from jsonb_array_elements(f->'cashEntries') ce),'1900-01-01');
+ return d||jsonb_build_object('transactions',(d->'transactions')||tx,'imports',(d->'imports')||jsonb_build_array(jsonb_build_object('id','__potok_cash__','account','__potok_cash__','bank','Наличные','start',start_date,'end','9999-12-31','opening',f#>'{cashOpening,amount}')));
+end $$;
+create or replace function public.potok_summary(d jsonb,m date) returns jsonb language plpgsql set search_path='' as $$
+declare s jsonb; amount_sum bigint; enabled boolean:=coalesce((d#>>'{finance,cashEnabled}')::boolean,false);
+begin
+ s:=public.potok_bank_summary(public.potok_effective(d),m);
+ if enabled then
+  select coalesce(sum(abs((ce->>'amount')::bigint)),0) into amount_sum from jsonb_array_elements(d#>'{finance,cashEntries}') ce where coalesce(ce->>'bankTransactionId','')<>'' and (ce->>'date')::date>=m and (ce->>'date')::date<m+interval '1 month';
+  s:=s||jsonb_build_object('income',(s->>'income')::bigint-amount_sum,'expense',(s->>'expense')::bigint-amount_sum);
+ end if;
+ return s||jsonb_build_object('cashIncluded',enabled,'crm',d#>array['finance','crm',to_char(m,'YYYY-MM')]);
+end $$;
+
+create or replace function public.potok_close_month(month_value date,expected_revision bigint,reviewed boolean) returns jsonb language plpgsql security definer set search_path='' as $$
+declare u uuid:=public.potok_require_user(); w public.potok_workspaces; s jsonb; c public.potok_closures;
+begin
+ select * into w from public.potok_workspaces where user_id=u for update;
+ if not found or w.revision<>expected_revision then raise exception 'REVISION_CONFLICT'; end if;
+ if reviewed is distinct from true then raise exception 'REVIEW_REQUIRED'; end if;
+ if month_value<>date_trunc('month',month_value)::date or month_value>=date_trunc('month',now() at time zone 'Asia/Yekaterinburg')::date then raise exception 'ONLY_PAST_MONTH'; end if;
+ s:=public.potok_summary(w.data,month_value);
+ if s->'opening'='null'::jsonb then raise exception 'OPENING_REQUIRED'; end if;
+ if (s->>'count')::bigint=0 then raise exception 'EMPTY_MONTH'; end if;
+ if exists(select 1 from jsonb_array_elements(w.data->'imports') i where (i->>'start')::date<month_value+interval '1 month' and (i->>'end')::date>=month_value and (coalesce((i->>'rejected')::int,0)>0 or coalesce((i->>'mismatch')::bigint,0)<>0)) then raise exception 'UNRESOLVED_IMPORT'; end if;
+ s:=s||jsonb_build_object('transactions',coalesce((select jsonb_agg(t order by t->>'date',t->>'id') from jsonb_array_elements(public.potok_effective(w.data)->'transactions') t where (t->>'date')::date>=month_value and (t->>'date')::date<month_value+interval '1 month'),'[]'::jsonb),'source_revision',w.revision,'reviewed',true,'cashIncluded',coalesce((w.data#>>'{finance,cashEnabled}')::boolean,false),'crm',w.data#>array['finance','crm',to_char(month_value,'YYYY-MM')]);
+ insert into public.potok_closures(user_id,month,snapshot) values(u,month_value,s) returning * into c;
+ update public.potok_workspaces set revision=revision+1,updated_at=now() where user_id=u;
+ return to_jsonb(c);
+end $$;
+revoke all on function public.potok_effective(jsonb),public.potok_bank_summary(jsonb,date) from public,anon,authenticated;
+commit;

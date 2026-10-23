@@ -35,3 +35,17 @@ body.locked .auth-panel{display:flex;align-items:center;justify-content:center;m
 .auth-card .hint{line-height:1.7;font-size:11px}.auth-card .auth-message:empty{display:none}
 @media(max-width:650px){body>main>header{height:64px;padding:0 16px}.header-start{gap:12px}.crumb{font-size:11px}.crumb span{margin:0 7px}.header-right{gap:8px}.menu-toggle{padding:9px 11px}.menu-toggle span{display:none}.auth-panel .auth-card{padding:28px 24px;border-radius:20px}.auth-card h2{font-size:26px}.auth-logo{margin-bottom:26px}.content{padding-top:24px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.stat strong{font-size:clamp(17px,5vw,23px)}body.locked .auth-panel{padding:20px 12px}}
 @media(prefers-reduced-motion:reduce){body>aside#sidebar{transition:none}}
+
+/* 2.1.2: кнопки архива не сжимаются и не обрезаются */
+#archiveList .import-item{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:16px;align-items:center}
+#archiveList .import-item>div{min-width:0}
+#archiveList .import-item .archive-actions{display:flex;flex:initial;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:410px}
+#archiveList .archive-actions button{flex:0 0 auto;white-space:nowrap;min-height:38px}
+#archiveList .import-item b,#archiveList .import-item p{overflow-wrap:anywhere}
+#archiveView .search-row input[type=month]{flex:0 1 220px;min-width:160px}
+.archive-tools{display:flex;align-items:center;gap:16px;padding:0 20px 18px}.archive-tools span{font-size:12px;color:#8a8395;line-height:1.6}
+@media(max-width:1100px){#archiveList .import-item{grid-template-columns:32px minmax(0,1fr)}#archiveList .import-item .archive-actions{grid-column:2;justify-content:flex-start;max-width:none}}
+@media(max-width:650px){#archiveList .import-item{gap:12px;padding:16px}#archiveList .import-item .archive-actions{grid-column:1/-1}.archive-tools{align-items:flex-start;flex-wrap:wrap;padding:0 16px 16px}#archiveView .search-row input[type=month]{flex:1 1 100%;max-width:100%}}
+/* 2.2: источники денег, касса и ручная сверка */
+.finance-panel{padding:24px;margin-bottom:20px}.finance-panel h2{font-size:19px;margin-bottom:15px}.finance-panel>p{font-size:13px;max-width:850px}.finance-grid{display:grid;grid-template-columns:1fr 1.3fr;gap:20px}.finance-panel .form-grid input,.finance-panel .form-grid select{min-width:0;width:100%}.finance-panel textarea{display:block;width:100%;border:1px solid #dddfe8;border-radius:8px;padding:12px;font:inherit;resize:vertical;margin-top:8px}.cash-switch{display:flex;align-items:center;gap:12px;font-size:17px;font-weight:600;margin:24px 0}.cash-switch input{width:22px;height:22px;accent-color:#7861d8}.finance-note{font-size:11px;padding:14px 22px;line-height:1.7}#financeSummary{margin-bottom:22px}.filters{flex-wrap:wrap}#cashRows p{font-size:11px;overflow-wrap:anywhere}#cashRows td{white-space:normal}#cashRows td.number{white-space:nowrap}#crmForm>label{display:block;color:#7d7b89;font-size:12px}#crmForm input[type=month]{padding:10px;border:1px solid #dddfe8;border-radius:8px}.finance-panel input{font-size:16px}#cashTotals{margin:12px 0 20px}#cashTotals b{color:#443e56}
+@media(max-width:950px){.finance-grid{grid-template-columns:1fr}.finance-panel{padding:20px}.filters .currency{display:none}}@media(max-width:650px){.finance-panel .form-grid{grid-template-columns:1fr}.filters label{min-width:130px}.finance-panel{padding:16px}.finance-note{padding:14px}}

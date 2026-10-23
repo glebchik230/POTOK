@@ -1,0 +1,26 @@
+-- Выполнить один раз целиком в Supabase SQL Editor. Данные не удаляются при установке.
+begin;
+alter table public.potok_files add column if not exists deleted_at timestamptz;
+create or replace function public.potok_trash_file(file_id uuid,expected_revision bigint) returns void language plpgsql security definer set search_path='' as $$
+declare u uuid:=public.potok_require_user(); w public.potok_workspaces; next_data jsonb; ids text[];
+begin
+ select * into w from public.potok_workspaces where user_id=u for update;
+ if not found or w.revision<>expected_revision then raise exception 'REVISION_CONFLICT'; end if;
+ if not exists(select 1 from public.potok_files where id=file_id and user_id=u and deleted_at is null) then raise exception 'FILE_NOT_FOUND'; end if;
+ select coalesce(array_agg(i->>'id'),array[]::text[]) into ids from jsonb_array_elements(w.data->'imports') i where i->>'cloudFileId'=file_id::text;
+ next_data:=w.data||jsonb_build_object(
+ 'imports',coalesce((select jsonb_agg(i) from jsonb_array_elements(w.data->'imports') i where not(i->>'id'=any(ids))),'[]'::jsonb),
+ 'transactions',coalesce((select jsonb_agg(t) from jsonb_array_elements(w.data->'transactions') t where not(t->>'importId'=any(ids))),'[]'::jsonb));
+ -- potok_save проверяет блокировку закрытых месяцев и обновляет версию.
+ perform public.potok_save(next_data,expected_revision);
+ update public.potok_files set deleted_at=now() where id=file_id and user_id=u;
+end $$;
+create or replace function public.potok_restore_file(file_id uuid) returns void language plpgsql security definer set search_path='' as $$
+declare u uuid:=public.potok_require_user();
+begin
+ update public.potok_files set deleted_at=null where id=file_id and user_id=u and deleted_at is not null;
+ if not found then raise exception 'FILE_NOT_FOUND'; end if;
+end $$;
+revoke all on function public.potok_trash_file(uuid,bigint),public.potok_restore_file(uuid) from public,anon,authenticated;
+grant execute on function public.potok_trash_file(uuid,bigint),public.potok_restore_file(uuid) to authenticated;
+commit;
